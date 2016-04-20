@@ -28,30 +28,79 @@
         </ul>
       </header>
       <section>
-        <h3>
-<a id="welcome-to-github-pages" class="anchor" href="#welcome-to-github-pages" aria-hidden="true"><span aria-hidden="true" class="octicon octicon-link"></span></a>Welcome to GitHub Pages.</h3>
-
-<p>This automatic page generator is the easiest way to create beautiful pages for all of your projects. Author your page content here <a href="https://guides.github.com/features/mastering-markdown/">using GitHub Flavored Markdown</a>, select a template crafted by a designer, and publish. After your page is generated, you can check out the new <code>gh-pages</code> branch locally. If you’re using GitHub Desktop, simply sync your repository and you’ll see the new branch.</p>
+        <h2>
+<a id="proposal" class="anchor" href="#proposal" aria-hidden="true"><span aria-hidden="true" class="octicon octicon-link"></span></a>Proposal</h2>
 
 <h3>
-<a id="designer-templates" class="anchor" href="#designer-templates" aria-hidden="true"><span aria-hidden="true" class="octicon octicon-link"></span></a>Designer Templates</h3>
+<a id="summary" class="anchor" href="#summary" aria-hidden="true"><span aria-hidden="true" class="octicon octicon-link"></span></a>Summary</h3>
 
-<p>We’ve crafted some handsome templates for you to use. Go ahead and click 'Continue to layouts' to browse through them. You can easily go back to edit your page before publishing. After publishing your page, you can revisit the page generator and switch to another theme. Your Page content will be preserved.</p>
-
-<h3>
-<a id="creating-pages-manually" class="anchor" href="#creating-pages-manually" aria-hidden="true"><span aria-hidden="true" class="octicon octicon-link"></span></a>Creating pages manually</h3>
-
-<p>If you prefer to not use the automatic generator, push a branch named <code>gh-pages</code> to your repository to create a page manually. In addition to supporting regular HTML content, GitHub Pages support Jekyll, a simple, blog aware static site generator. Jekyll makes it easy to create site-wide headers and footers without having to copy them across every page. It also offers intelligent blog support and other advanced templating features.</p>
+<p>I will implement the irradiance map solution of <a href="https://research.nvidia.com/publication/cloudlight-system-amortizing-indirect-lighting-real-time-rendering/">CloudLight</a> and compare performance and quality tradeoffs to local computation.</p>
 
 <h3>
-<a id="authors-and-contributors" class="anchor" href="#authors-and-contributors" aria-hidden="true"><span aria-hidden="true" class="octicon octicon-link"></span></a>Authors and Contributors</h3>
+<a id="background" class="anchor" href="#background" aria-hidden="true"><span aria-hidden="true" class="octicon octicon-link"></span></a>Background</h3>
 
-<p>You can <a href="https://help.github.com/articles/basic-writing-and-formatting-syntax/#mentioning-users-and-teams" class="user-mention">@mention</a> a GitHub username to generate a link to their profile. The resulting <code>&lt;a&gt;</code> element will link to the contributor’s GitHub Profile. For example: In 2007, Chris Wanstrath (<a href="https://github.com/defunkt" class="user-mention">@defunkt</a>), PJ Hyett (<a href="https://github.com/pjhyett" class="user-mention">@pjhyett</a>), and Tom Preston-Werner (<a href="https://github.com/mojombo" class="user-mention">@mojombo</a>) founded GitHub.</p>
+<p>Cloud rendering is a promising platform for graphics rendering in the future. Rendering (games) in the cloud has the potential for methods that would be unreasonable for a local machine, such as possibly raytracing the entire scene to achieve a higher level of quality.</p>
+
+<p>The CloudLight paper is a first attempt into rendering games in the cloud. Traditional techniques for parallel rendering don't translate well towards rendering games for many clients, and as the number of clients increases much of the work becomes duplicated. With many clients connecting to a single cloud, this allows us to perform operations that would traditionally be too expensive for a single user, and amortize the cost across many clients. One such possibility for amortiziation is Global Illumination.</p>
+
+<p>The irradiance map solution proposed is comprised primarily of two parts:</p>
+
+<ol>
+<li>A cloud side raytracer which aggregates diffuse reflections to a global illumination lightmap, which is then H.264 encoded and streamed to the client as a video.</li>
+<li>The client side renderer, which is just a typical renderer with lightmap support. The only difference here is the client now needs to decode the H.264 stream, and update the lightmap as it receives them.</li>
+</ol>
 
 <h3>
-<a id="support-or-contact" class="anchor" href="#support-or-contact" aria-hidden="true"><span aria-hidden="true" class="octicon octicon-link"></span></a>Support or Contact</h3>
+<a id="challenge" class="anchor" href="#challenge" aria-hidden="true"><span aria-hidden="true" class="octicon octicon-link"></span></a>Challenge</h3>
 
-<p>Having trouble with Pages? Check out our <a href="https://help.github.com/pages">documentation</a> or <a href="https://github.com/contact">contact support</a> and we’ll help you sort it out.</p>
+<p>Launching a separate instance of a raytracer for every viewport is clearly inefficient if multiple viewports are sharing a scene. We need to break down the problem into portions that are viewport independent and those that aren't, allowing us to amortize the cost of operations across many viewports. Global illumination is one component of a scene that is viewport independent, and as such can be amortized across clients.</p>
+
+<p>Global illumination is very expensive to compute, and requires a significant amount of processing power on the client side. As such, without a sufficient GPU it becomes impossible to compute global illumination while keeping real time framerates. However global illumination is a very attractive feature to have, as it increases the realism of a rendered scene.</p>
+
+<p>Notable challenges would be the amount of components that need to be implemented: a remote side raytracer, networking code, as well as the client side code to piece information together and incorporate it into its rendering pipeline.</p>
+
+<h3>
+<a id="resources" class="anchor" href="#resources" aria-hidden="true"><span aria-hidden="true" class="octicon octicon-link"></span></a>Resources</h3>
+
+<p>In a similar vein to the paper, multiple frameworks would be used to speed up development times of the various components.</p>
+
+<p>Raytracing  -   OptiX
+Networking  -   Asio / SDL_net
+Window      -   SDL / GLFW
+Graphics    -   OpenGL
+H.264       -   C++ / libav / FFmpeg</p>
+
+<p>Client side would probably be my laptop. Access to a machine with a beefy GPU that I could run at a whim (Gates / latedays / other) would be used for the cloud side.</p>
+
+<p>Code would be written from scratch.</p>
+
+<h3>
+<a id="platform" class="anchor" href="#platform" aria-hidden="true"><span aria-hidden="true" class="octicon octicon-link"></span></a>Platform</h3>
+
+<p>The platform chosen is due to tradeoffs between performance and creation time. Using OptiX will hopefully speed up creation of the cloud side raytracer. The remaining platform components are typical of games, and since CloudLight is targeted towards rendering games it makes sense to use a system similar to this.</p>
+
+<h3>
+<a id="goals-and-deliverables" class="anchor" href="#goals-and-deliverables" aria-hidden="true"><span aria-hidden="true" class="octicon octicon-link"></span></a>Goals and Deliverables</h3>
+
+<p>Plan to achieve:<br>
+Demonstrate a system with multiple viewports interacting with a single remote server, and compare performance to a system where work is not amortized.</p>
+
+<p>Hope to achieve:<br>
+Integrate this with Yong's system</p>
+
+<h3>
+<a id="schedule" class="anchor" href="#schedule" aria-hidden="true"><span aria-hidden="true" class="octicon octicon-link"></span></a>Schedule</h3>
+
+<p>April 1: Become confused<br>
+April 4: Talk to Yong<br>
+April 5: Talk to Kayvon<br>
+April 5: Formulate a concrete project idea<br>
+April 9: Crude raytracer in OptiX<br>
+April 16: Crude renderer in OpenGL<br>
+April 22: Irradiance map creation in OptiX<br>
+April 29: Implement irradiance map in OpenGL<br>
+May 6: Communication code between host and client<br>
+May 9: Feel accomplished (hopefully)</p>
       </section>
       <footer>
         <p>This project is maintained by <a href="https://github.com/THofstee">THofstee</a></p>
