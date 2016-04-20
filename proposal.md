@@ -1,8 +1,10 @@
 ---
 title: Proposal
+layout: default
 ---
 
 ## Proposal
+
 ### Summary
 I will implement the irradiance map solution of [CloudLight](https://research.nvidia.com/publication/cloudlight-system-amortizing-indirect-lighting-real-time-rendering/) and compare performance and quality tradeoffs to local computation.
 
