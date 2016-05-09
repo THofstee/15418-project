@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta http-equiv="X-UA-Compatible" content="chrome=1">
-    <title>15418-project by THofstee</title>
+    <title>Parallel BVH Building by THofstee</title>
 
     <link rel="stylesheet" href="stylesheets/styles.css">
     <link rel="stylesheet" href="stylesheets/github-light.css">
@@ -15,7 +15,7 @@
   <body>
     <div class="wrapper">
       <header>
-        <h1>15418-project</h1>
+        <h1>Parallel BVH Building</h1>
         <p>Final project for CMU 15-418.</p>
 
         <p class="view"><a href="https://github.com/THofstee/15418-project">View the Project on GitHub <small>THofstee/15418-project</small></a></p>
@@ -28,10 +28,266 @@
         </ul>
       </header>
       <section>
-        <p><a href="http://thofstee.github.io/15418-project/checkpoint">Checkpoint</a></p>
-        <p><a href="http://thofstee.github.io/15418-project/proposal">Proposal</a></p>
+        <h1>
+<a id="final-report" class="anchor" href="#final-report" aria-hidden="true"><span aria-hidden="true" class="octicon octicon-link"></span></a>Final Report</h1>
 
-        <p>I don't understand gh-pages.</p>
+<p>I switched gears since the checkpoint and proposal. The CloudLight implementation was more of a graphics project and didn't actually have as much to do with parallel programming as I had hoped.</p>
+
+<p>Instead, I made a CPU based parallel BVH builder for raytracing, utilizing both multithreading with OpenMP and SIMD through intrinsics. This builder is heavily inspired by two of Ingo Wald's papers. <a href="http://www.sci.utah.edu/%7Ewald/Publications/2007/ParallelBVHBuild/fastbuild.pdf">1</a> <a href="http://www.sci.utah.edu/%7Ewald/Publications/2012/MICBVH/LRB-BVH.pdf">2</a></p>
+
+<hr>
+
+<h3>
+<a id="raytracing" class="anchor" href="#raytracing" aria-hidden="true"><span aria-hidden="true" class="octicon octicon-link"></span></a>Raytracing</h3>
+
+<p><img src="https://upload.wikimedia.org/wikipedia/commons/thumb/8/83/Ray_trace_diagram.svg/300px-Ray_trace_diagram.svg.png" alt="">
+Raytracing is a method to generate images based on tracing the path of light. A virtual camera is placed in the scene, and rays are traced through pixels in the screen towards the scene geometry. For each ray, we find the closest intersection and color it.</p>
+
+<p>My raytracer is based on texts by Peter Shirley, but is heavily modified and stripped of features. I also make a few assumptions:</p>
+
+<ol>
+<li>All materials in the scene are lambertian (they are perfectly diffuse)</li>
+<li>There is one point light source</li>
+<li>The scene is entirely triangles</li>
+</ol>
+
+<p>For each ray that intersects the scene, we create two rays - a shadow ray and a diffuse ray. The shadow ray performs another ray-scene intersection but is directed at the point light. If we hit an object and the distance is less than the distance to the point light, we are in shadow. Otherwise we add the contribution of the light.</p>
+
+<p>Here is an image generated with just the shadow rays.
+<img src="http://puu.sh/oM6aN/cb255aa099.png" alt=""></p>
+
+<p>The diffuse rays help us account for indirect light, such as light bouncing off nearby walls. We cap the maximum number of bounces, and also perform a russian roulette to determine if the ray should terminate at each bounce. (You could trace all rays to max depth, but given an equal amount of runtime I felt that the russian roulette generated images with less noise.) The next image has both shadow rays and diffuse rays.</p>
+
+<p><img src="http://puu.sh/oM6bH/0bae91c283.png" alt=""></p>
+
+<p>We also create multiple rays per pixel, so that we can reduce the noise in our images.</p>
+
+<p>While raytracing is conceptually rather simple, a quick examination shows us a large problem.</p>
+
+<h4>
+<a id="pseudocode" class="anchor" href="#pseudocode" aria-hidden="true"><span aria-hidden="true" class="octicon octicon-link"></span></a>Pseudocode</h4>
+
+<pre><code>for every pixel
+    for every sample
+        for every triangle
+            check intersection
+        ...
+</code></pre>
+
+<p>Essentially, we are in O(pixels * samples * triangles). As a project focused on parallelism, there isn't much we can do to reduce the number of pixels or samples - both result in a degradation in image quality. Instead, we trace many rays at the same time using OpenMP.</p>
+
+<p>However at this point the raytracer is still fairly slow on larger images, only getting a few thousand rays/sec. We need to do something about the triangles.</p>
+
+<hr>
+
+<h3>
+<a id="bounding-volume-hierarchy-bvh" class="anchor" href="#bounding-volume-hierarchy-bvh" aria-hidden="true"><span aria-hidden="true" class="octicon octicon-link"></span></a>Bounding Volume Hierarchy (BVH)</h3>
+
+<p>A bounding volume hierarchy is essentially a spatial tree. We divide the scene into two bounding boxes at each node, until we reach leaf elements (the triangles). This allows us to perform intersection tests against the nodes instead of going through every single triangle. If we don't hit a node, it's very clear we will not hit any triangles in that node.</p>
+
+<p><img src="http://puu.sh/oM6U2/6f79cfa394.jpg" alt=""></p>
+
+<p>There are many ways to implement a BVH. The simplest is to sort all the elements relative to some axis (x, y, z) and subdivide down the median. This allows us to get our raytracer up to around 1 million rays/sec on simpler scenes. This is much better than before, but a better way of creating a BVH is to use a Surface Area Heuristic (SAH).</p>
+
+<p>For a true SAH based BVH, you consider every possible splitting plane amongst the triangles in your node, and calculate the bounding boxes of all triangles to the left and right of the splitting plane. The best plane to split is the one with the least surface area, since we expect rays to be coming from any direction with equal probability. <a href="http://15462.courses.cs.cmu.edu/fall2015/lecture/acceleration/slide_025">This slide</a> from 15-462 has a bit more detail.</p>
+
+<h3>
+<a id="accelerating-sah-bvh-builds" class="anchor" href="#accelerating-sah-bvh-builds" aria-hidden="true"><span aria-hidden="true" class="octicon octicon-link"></span></a>Accelerating SAH-BVH Builds</h3>
+
+<p>The first paper by Wald suggests creating bins that span the bounding box of the centroids of all triangles in our current node. We create these bins along the widest axis of our centroid bounding box.</p>
+
+<p>We can iterate through all the triangles in our node and place them in a bin based on their centroid, and keep track of the bounding box for each bin (full bounding box, not just centroids). This allows us to approximate a SAH much faster than sweeping across all triangles. In fact, as few as 8 or 4 bins seems to perform quite a good job, but 16 was the sweet spot for me (and Wald). Our raytracer can now do a few million rays/sec on more complicated scenes. Much better than the median split BVH. The remaining optimizations do not significantly affect the quality of the created BVH, so raytracing results will be omitted.</p>
+
+<h3>
+<a id="parallelizing-the-bvh" class="anchor" href="#parallelizing-the-bvh" aria-hidden="true"><span aria-hidden="true" class="octicon octicon-link"></span></a>Parallelizing the BVH</h3>
+
+<p>There are three phases when we construct the BVH:</p>
+
+<ol>
+<li>Binning</li>
+<li>Plane evaluation</li>
+<li>Partitioning</li>
+</ol>
+
+<p>Plane evaluation is done serially because it must be. Besides, there are only 16 bins to check against so this is a trivially small portion of our computation.</p>
+
+<p>We can parallelize across binning and partitioning, assigning a different portion of our triangles to different threads, while being careful about cache alignment boundaries to prevent false sharing. For binning, each thread updates its own local bins, and a reduction is performed serially across the bins afterwards. </p>
+
+<p>For partitioning, we have two global queues where elements are pushed either to the left or right based on which side of the splitting plane they fall on. A single consumer thread takes these elements from the queue and places them into a different triangle array. To save on memory usage, we allocate 2 arrays of N triangles, and swap between the two arrays at each step of the node. Since the BVH is constructed recursively, we are guaranteed that no two threads will be modifying the same area of the array.</p>
+
+<p>And since the BVH is constructed recursively, we can spawn a new task to produce the left and right subtrees of the current node. However this means that we would probably require a few levels of BVH node construction before we can create enough tasks to saturate our CPU. Wald mentions these horizontal/vertical work sharing issues and proposes adaptive switching solutions and ...</p>
+
+<h3>
+<a id="openmp-tasking-model" class="anchor" href="#openmp-tasking-model" aria-hidden="true"><span aria-hidden="true" class="octicon octicon-link"></span></a>OpenMP Tasking Model</h3>
+
+<p>There's a simpler way: OpenMP Tasks. By representing all of the parallelism in our code as OpenMP tasks, we essentially avoid this problem altogether.</p>
+
+<p>OpenMP tasks are basically treated as a work queue. Every task created will be pushed on the task queue, and threads will take tasks from the queue as they complete other ones. There is no guarantee on the order these tasks will execute, so we do need to add a little bit of synchronization to our code.</p>
+
+<p>Thanks to OpenMP doing some heavy lifting, the horizontal/vertical work sharing problem is eliminated and we see almost perfect speedup.</p>
+
+<p><img src="http://puu.sh/oM8dO/21fd3062ad.png" alt=""></p>
+
+<p>The speedup graph was generated using my quad-core (8 threads) laptop CPU, and a Power8 node configured to be SMT1. As can se seen in the graph, speedup on my laptop CPU tapers off at around 4 cores, indicating that we are compute bound. We also see that Sibenik doesn't achieve ideal speedup. This is because Sibenik is significantly smaller than Sponza and thus doesn't generate enough work to saturate my CPU.</p>
+
+<hr>
+
+<h3>
+<a id="what-about-simd" class="anchor" href="#what-about-simd" aria-hidden="true"><span aria-hidden="true" class="octicon octicon-link"></span></a>What about SIMD?</h3>
+
+<p>On just about every modern CPU, we have SIMD processing capability. My laptop has AVX2, which is 8 floats wide. So this is potentially another 8x speedup we are leaving untapped if we ignore SIMD!</p>
+
+<p>This is where Wald's second paper comes into play.</p>
+
+<p>First, we need to restructure all of our data since the current layout is not SIMD friendly. Wald adopts an Array of Structures of Arrays utilizing quantized and packed unorm10 data type to fit 16 elements into 3 cache lines. Since I'm not using the Xeon Phi, I don't have hardware support for unorm10, and since we are compute heavy it would be a very bad idea to add more compute to deal with this.</p>
+
+<p>Instead I adopt the following layout:
+<img src="http://puu.sh/oM8FQ/01158f22f0.png" alt=""></p>
+
+<p>Terminology:</p>
+
+<ul>
+<li>
+<strong>Fragments</strong> are the structs of arrays</li>
+<li>
+<strong>Elements</strong> are the elements in the fragment arrays</li>
+</ul>
+
+<p>In the fragments, we store the minimum and maximum coordinates of the bounding box for each triangle, as well as an ID to that triangle into a global array. This layout allows us to load chunks of the element arrays directly into SIMD, instead of relying on a gather if we simply had Arrays of Structs.</p>
+
+<h4>
+<a id="binning" class="anchor" href="#binning" aria-hidden="true"><span aria-hidden="true" class="octicon octicon-link"></span></a>Binning</h4>
+
+<p>The binning phase is done 1 element at a time. This might sound a bit odd, since we just laid it out to utilize the SIMD, and each element should only fall into one bin. There are a few reasons for doing it this way.</p>
+
+<ul>
+<li>Why not process 8 elements at once?
+
+<ul>
+<li>Elements can map to the same bin, and conflict resolution is hard/expensive</li>
+</ul>
+</li>
+<li>Why not process multiple dimesnions at once?
+
+<ul>
+<li>This introduces a pretty high overhead</li>
+</ul>
+</li>
+</ul>
+
+<p>Instead, we opt to update all 8 bins in parallel. Since previously an element mapped only into one bin, we need to change the meaning of our bins. Instead of bins being the region between splitting planes, in my code the bins are the splitting planes. Wald doesn't mention this, but it also allows us to do a cute trick where we can actually treat this as 9 separate bins in our 8 wide SIMD, so we even get a little bit more quality than representing 1 bin per SIMD lane.</p>
+
+<p><img src="http://puu.sh/oM9JN/ae3cd5fb89.png" alt=""></p>
+
+<p>Each element is placed either to the left or right variables relative to the bin using mask and blend intrinsics. We keep count of the number of elements to the right (since left is just n-right), and update the bounding boxes of the left and right elements.</p>
+
+<p>Wald also suggests performing 3 passes over each fragment, and updating the x, then y, then z, respectively in each of the passes to avoid possible issues with regards to SIMD registers having to be swapped to/from memory due to oversaturation. I saw no benefit in my code from doing this, in fact it got slightly worse. The reason for this is doing 3 passes results in extra computation that we avoid in 1 pass.</p>
+
+<h4>
+<a id="plane-evaluation" class="anchor" href="#plane-evaluation" aria-hidden="true"><span aria-hidden="true" class="octicon octicon-link"></span></a>Plane Evaluation</h4>
+
+<p>Same as before, but we don't need to compute the bounding boxes since we've been updating them when we bin the elements!</p>
+
+<h4>
+<a id="speedup-using-simd" class="anchor" href="#speedup-using-simd" aria-hidden="true"><span aria-hidden="true" class="octicon octicon-link"></span></a>Speedup using SIMD</h4>
+
+<p><img src="http://puu.sh/oM9dr/2de1c6b196.png" alt=""></p>
+
+<p>Huh. Our SIMD is 8 wide so we expect 8x speedup with 1 thread. Instead we only see 1.8x speedup. What's going on?</p>
+
+<h4>
+<a id="partitioning" class="anchor" href="#partitioning" aria-hidden="true"><span aria-hidden="true" class="octicon octicon-link"></span></a>Partitioning</h4>
+
+<p>You might have noticed I skipped the partitioning section when discussing SIMD optimizations. Let's look at another graph comparing serial vs SIMD single threaded execution time.</p>
+
+<p><img src="http://puu.sh/oM9iF/693d32f8b2.png" alt=""></p>
+
+<p>As you can see, our binning is indeed about 8x faster. Evaluation is pretty trivial too. What's going on with the partitioning?</p>
+
+<p>My laptop supports AVX2. Wald wrote his paper for the Phi, which supports AVX512. The key difference between AVX2 and AVX512 in this regard is AVX2 does <em>not</em> have a <strong>scatter</strong> instruction. We can compute the centroid bounding boxes with SIMD to pass onto the constructors for our children nodes (this is the slight speedup you see here), but we are stuck partitioning the elements serially again!</p>
+
+<hr>
+
+<h3>
+<a id="takeaways" class="anchor" href="#takeaways" aria-hidden="true"><span aria-hidden="true" class="octicon octicon-link"></span></a>Takeaways</h3>
+
+<ul>
+<li>SIMD is not <em>great</em> on CPU for BVH building with this algorithm, at least until someone releases SIMD with a scatter on CPU.</li>
+<li>I really want a scatter operation now.
+
+<ul>
+<li>Architectures with scatter:
+
+<ul>
+<li>Xeon Phi</li>
+<li>GPU</li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+
+<p>So it's clear now why Wald picked the Xeon Phi instead of a CPU, and it's not just because of the massive boost in compute.</p>
+
+<p>AVX512 also has a lot more instructions available. What Wald does in 12 masked SIMD min/maxes I have to do in 48 operations: Blend, And, Convert, Min.</p>
+
+<p>This raises a few questions with regards to CPU BVH building:</p>
+
+<ul>
+<li>Can we restructure BVH building so it doesn't need a partition?
+
+<ul>
+<li>Sorting based BVH building!
+
+<ul>
+<li>We can use SIMD as a sorting network and get its benefit</li>
+</ul>
+</li>
+</ul>
+</li>
+<li>Can we reduce the amount of memory traffic?
+
+<ul>
+<li>Sample objects in node instead of processing all elements
+
+<ul>
+<li>Worse quality BVH</li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+
+<p>Based on the measurements I took for sorting based BVH, a fully parallel sorting based BVH was built as quicky as a single threaded SAH based build. Assuming the best case scenario, we can only expect at most 2x speedup from a sorting based build. This might not be the right answer.</p>
+
+<p>For memory regards, this also suggests that other architectures be considered, such as FPGA based approaches where you could stream the data through the accelerator in one pass, changing this from being compute heavy to bandwidth bound.</p>
+
+<h3>
+<a id="fun-facts" class="anchor" href="#fun-facts" aria-hidden="true"><span aria-hidden="true" class="octicon octicon-link"></span></a>Fun Facts</h3>
+
+<p>The SIMD version uses almost 3x as much memory due to precomputation requirements.</p>
+
+<p><img src="http://puu.sh/oMa45/ab8102e81d.png" alt=""></p>
+
+<h3>
+<a id="pretty-pictures" class="anchor" href="#pretty-pictures" aria-hidden="true"><span aria-hidden="true" class="octicon octicon-link"></span></a>Pretty Pictures</h3>
+
+<p>Here are some images I made during testing:</p>
+
+<p><img src="http://puu.sh/oMa72/04396fca81.png" alt="">
+<img src="http://puu.sh/oMa7B/9872355c21.png" alt="">
+<img src="http://puu.sh/oMa8l/d5ae0397be.png" alt="">
+<img src="http://puu.sh/oMa9Z/e0bc1dda78.png" alt="">
+<img src="http://puu.sh/oMaab/a09c892adb.png" alt="">
+Sponza looks really boring without textures.</p>
+
+<h1>
+<a id="thanks" class="anchor" href="#thanks" aria-hidden="true"><span aria-hidden="true" class="octicon octicon-link"></span></a>Thanks!</h1>
+
+<p><a href="http://thofstee.github.io/15418-project/checkpoint">Checkpoint</a>
+<a href="http://thofstee.github.io/15418-project/proposal">Proposal</a></p>
+
+<p>I don't understand gh-pages.</p>
       </section>
       <footer>
         <p>This project is maintained by <a href="https://github.com/THofstee">THofstee</a></p>
