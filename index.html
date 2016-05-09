@@ -75,6 +75,8 @@
         ...
 </code></pre>
 
+<p>For the image above, that is 640<em>480</em>100*36 = 1,105,920,000 ray triangle intersections! Not including bounce or shadow rays!</p>
+
 <p>Essentially, we are in O(pixels * samples * triangles). As a project focused on parallelism, there isn't much we can do to reduce the number of pixels or samples - both result in a degradation in image quality. Instead, we trace many rays at the same time using OpenMP.</p>
 
 <p>However at this point the raytracer is still fairly slow on larger images, only getting a few thousand rays/sec. We need to do something about the triangles.</p>
